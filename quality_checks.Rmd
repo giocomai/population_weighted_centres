@@ -1,0 +1,62 @@
+---
+title: "Quality checks for the population-weighted centres of European LAU"
+description: |
+  Are population-weighted centres really better?
+author:
+  - name: Giorgio Comai 
+    url: https://giorgiocomai.eu
+    affiliation: OBCT/EDJNet
+    affiliation_url: https://www.europeandatajournalism.eu/
+date: "`r Sys.Date()`"
+output: distill::distill_article
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library("tidyverse", quietly = TRUE)
+library("sf", quietly = TRUE)
+library("latlon2map")
+library("RSQLite") # for caching
+options(timeout = 60000)
+
+cache_folder <- fs::path(fs::path_home_r(), "R", "ll_data")
+
+fs::dir_create(cache_folder)
+
+ll_set_folder(path = cache_folder)
+
+## set db
+db <- DBI::dbConnect(
+  drv = RSQLite::SQLite(),
+  fs::path(cache_folder, "pop_weighted_centre.sqlite")
+)
+
+# pop_grid_year <- 2011
+# lau_year <- 2018
+
+pop_grid_year <- 2018
+lau_year <- 2020
+
+power_centre <- 2
+```
+
+# A tipology of local administrative units matched with a population grid
+
+There are a few main types of LAUs as far as their matching with a population grid is concerned. 
+
+- LAU with a small share of the population in grid cells intersecting the boundary lines: we expect these to be least problematic
+- very small LAU with most or all of its population in grid cells intersecting the boundary lines: in such cases, the population grid won't probably be of much help, but it also cannot be very wrong. Should a centroid be used in such cases?
+- LAU with a large surface, few residents in the grid cells fully inside the administrative boundary, and most or all residents in cells intersecting the administrative boundary, possibly including residents outside the boundary line. These are the ones most likely to be wrong, and are not uncommon in mountainous or less populated areas. Simply ignoring cells intersecting the boundary may however not be feasible, due to the very small number of residents fully inside the boundary line. Is there a better way to find a meaningful centre?
+- LAU with non contiguous territories
+
+
+## LAU with considerable surface and low population density
+
+```{r}
+ll_get_lau_eu(year = 2020) %>% sf::st_drop_geometry()
+```
+
+
+
