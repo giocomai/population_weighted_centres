@@ -1,0 +1,37 @@
+---
+title: "Difference between approaches"
+description: |
+  Looks good, but how much of a difference does this really make
+author:
+  - name: Giorgio Comai 
+    url: https://giorgiocomai.eu
+    affiliation: OBCT/EDJNet
+    affiliation_url: https://www.europeandatajournalism.eu/
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+Taking as reference the LAU for 2020 and the population grid for 2018, how much of a difference does this approach make, compared with simply using the centroid?
+
+
+```{r}
+distance_between_centroid_and_pop_weighted <- sf::st_distance(x = centroids_sf %>% sf::st_transform(3857),
+                                                              y = pop_weighted_centres_sf %>% sf::st_transform(3857),
+                                                              by_element = TRUE)
+
+mean(distance_between_centroid_and_pop_weighted)
+median(distance_between_centroid_and_pop_weighted)
+max(distance_between_centroid_and_pop_weighted)
+
+tibble::tibble(gisco_id = centroids_sf$GISCO_ID, 
+               distance = distance_between_centroid_and_pop_weighted) %>% 
+  dplyr::arrange(desc(distance)) %>% View()
+
+
+```
+

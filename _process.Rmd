@@ -1,0 +1,273 @@
+---
+title: "Population-weighted centres of local administrative units (LAU) in Europe"
+description: |
+  If you need the coordinates of a city, where do you put the centre?
+author:
+  - name: Giorgio Comai 
+    url: https://giorgiocomai.eu
+    affiliation: OBCT/EDJNet
+    affiliation_url: https://www.europeandatajournalism.eu/
+date: "`r Sys.Date()`"
+params:
+  pop_grid_year: 2018
+  lau_year: 2020
+  power_centre: 2
+  adjusted: TRUE
+output: distill::distill_article
+---
+
+## Data processing
+
+```{r setup, include=FALSE}
+
+process_pop_centre <- TRUE
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library("tidyverse", quietly = TRUE)
+library("sf", quietly = TRUE)
+library("latlon2map")
+library("RSQLite") # for caching
+options(timeout = 60000)
+
+cache_folder <- fs::path(fs::path_home_r(), "R", "ll_data")
+
+fs::dir_create(cache_folder)
+
+ll_set_folder(path = cache_folder)
+
+## set db
+db <- DBI::dbConnect(
+  drv = RSQLite::SQLite(),
+  fs::path(cache_folder, "pop_weighted_centre.sqlite")
+)
+
+pop_grid_year <- params$pop_grid_year
+lau_year <- params$lau_year
+power_centre <- params$power_centre
+adjusted = params$adjusted
+
+adjusted_text <- ifelse(adjusted,
+                        "adjusted_intersection",
+                        "full_intersection")
+
+source("functions.R")
+
+
+```
+
+
+
+
+
+```{r get base data for each source dataset}
+pop_grid_countries <- get_pop_grid_countries(pop_grid_year, db)
+lau_countries <- get_lau_countries(lau_year, db)
+gisco_id_df <- get_gisco_id(lau_year, db)
+```
+
+
+How many countries are present in both the LAU and population grid dataset?
+
+```{r}
+pop_grid_lau_countries <- dplyr::semi_join(x = lau_countries,
+                                           y = pop_grid_countries,
+                                           by = "country") %>% 
+  dplyr::arrange(country) %>% 
+  dplyr::pull(country)
+
+length(pop_grid_lau_countries)
+
+pop_grid_lau_countries
+```
+
+
+
+
+```{r process, eval=process_pop_centre}
+
+pop_grid_sf <- ll_get_population_grid(year = pop_grid_year,
+                                      silent = TRUE)
+  # for older grid datasets
+  if (is.element("CNTR_CODE", colnames(pop_grid_sf))) {
+    pop_grid_sf <- pop_grid_sf %>% 
+      rename(CNTR_ID = CNTR_CODE)
+  }
+  
+  # for older grid datasets
+  if (is.element("TOT_P_2018", colnames(pop_grid_sf))) {
+    pop_grid_sf <- pop_grid_sf %>% 
+      rename(TOT_P = TOT_P_2018)
+  }
+
+
+purrr::walk(
+  .x = pop_grid_lau_countries,
+  .f = function(current_country) {
+    current_csv_folder <- paste("pop",
+                                pop_grid_year,
+                                "lau",
+                                lau_year,
+                                "p",
+                                power_centre,
+                                adjusted_text,
+                                sep = "_")
+    
+    fs::dir_create(current_csv_folder)
+
+    current_country_csv <- fs::path(current_csv_folder,
+                                    paste0(paste(current_country, "pop", pop_grid_year, "lau", lau_year, "p", power_centre, adjusted_text,  sep = "_"), ".csv"))
+    
+    if (fs::file_exists(current_country_csv)==FALSE) {
+      message(paste0("Now processing ", current_country, " (", which(pop_grid_lau_countries %in% current_country), " of ", length(pop_grid_lau_countries), ")"))
+      
+      current_table <- paste(current_country,
+                             "pop",
+                             pop_grid_year,
+                             "lau",
+                             lau_year,
+                             "p",
+                             power_centre,
+                             adjusted_text,
+                             sep = "_")
+       
+      if (DBI::dbExistsTable(conn = db,
+                             name = current_table) == TRUE) {
+        cached_df <- dplyr::tbl(src = db,
+                                current_table) %>% 
+          tibble::as_tibble() %>% 
+          dplyr::filter(gisco_id %in% gisco_id_df$gisco_id)
+        
+      } else {
+        cached_df <- tibble::tibble(gisco_id = as.character(NA), 
+                                    lau_name = as.character(NA),
+                                    longitude = as.numeric(NA), 
+                                    latitude = as.numeric(NA)
+        ) %>%
+          dplyr::slice(0)
+      }
+     
+      non_cached_df <- gisco_id_df %>% 
+        dplyr::filter(country == current_country) %>% 
+        dplyr::anti_join(y = cached_df, by = "gisco_id")
+      
+      current_country_lau_sf <- ll_get_lau_eu(year = lau_year,
+                                              silent = TRUE) %>% 
+        dplyr::filter(CNTR_CODE == current_country)
+      
+      current_country_pop_grid <- pop_grid_sf %>% 
+        dplyr::filter(is.na(CNTR_ID)==FALSE) %>% 
+        dplyr::filter(stringr::str_detect(string = CNTR_ID,
+                                          pattern = current_country))
+      
+      pb <- progress::progress_bar$new(total = length(non_cached_df$gisco_id))
+      
+      non_cached_pop_centre_df <- purrr::map_dfr(
+        .x = non_cached_df$gisco_id,
+        .f = function(current_gisco_id) {
+          pb$tick()
+          
+          
+          # for older LAU datasets
+          if (is.element("LAU_LABEL", colnames(current_country_lau_sf))) {
+            current_country_lau_sf <- current_country_lau_sf %>% 
+              rename(LAU_NAME = LAU_LABEL)
+          }
+          
+          current_lau_sf <- current_country_lau_sf %>% 
+            dplyr::filter(GISCO_ID == current_gisco_id) %>% 
+            dplyr::select(GISCO_ID, CNTR_CODE, LAU_NAME)
+          
+          current_pop_grid_sf <- ll_get_population_grid(
+            year = pop_grid_year,
+            match_sf = current_lau_sf,
+            match_name = stringr::str_c(current_gisco_id,
+                                        "lau_", lau_year,
+                                        "pop_grid_", pop_grid_year,
+                                        "intersects",
+                                        sep = "-"),
+            population_grid_sf = current_country_pop_grid,
+            join = sf::st_intersects,
+            silent = TRUE
+          )
+          
+          
+          # for older grid datasets
+          if (is.element("CNTR_CODE", colnames(current_pop_grid_sf))) {
+            current_pop_grid_sf <- current_pop_grid_sf %>% 
+              rename(CNTR_ID = CNTR_CODE)
+          }
+          
+          # for older grid datasets
+          if (is.element("TOT_P_2018", colnames(current_pop_grid_sf))) {
+            current_pop_grid_sf <- current_pop_grid_sf %>% 
+              rename(TOT_P = TOT_P_2018)
+          }
+          
+          if (nrow(current_pop_grid_sf)>0&sum(current_pop_grid_sf$TOT_P)>0) {
+            pop_centre_df <- ll_find_pop_centre(sf_location = current_lau_sf %>%
+                                                  sf::st_transform(crs = 4326),
+                                                sf_population_grid = current_pop_grid_sf %>%
+                                                  sf::st_transform(crs = 4326),
+                                                power = power_centre,
+                                                adjusted = adjusted) %>% 
+              sf::st_coordinates() %>%
+              tibble::as_tibble() %>% 
+              dplyr::transmute(
+                gisco_id = current_gisco_id,
+                lau_name = current_lau_sf %>% dplyr::pull(LAU_NAME),
+                longitude = as.numeric(X),
+                latitude = as.numeric(Y)
+              )
+            
+            DBI::dbWriteTable(db,
+                              name = current_table,
+                              value = pop_centre_df,
+                              append = TRUE)
+            
+            pop_centre_df
+          } else {
+            pop_centre_df <- sf::st_centroid(current_lau_sf) %>% 
+              sf::st_coordinates() %>%
+              tibble::as_tibble() %>% 
+              dplyr::transmute(
+                gisco_id = current_gisco_id,
+                lau_name = current_lau_sf %>%
+                  dplyr::pull(LAU_NAME),
+                longitude = as.numeric(X),
+                latitude = as.numeric(Y)
+              )
+
+            DBI::dbWriteTable(db,
+                              name = current_table,
+                              value = pop_centre_df,
+                              append = TRUE)
+            
+            # to check lau where centroid was used
+            DBI::dbWriteTable(db,
+                              name = paste("centroid",
+                                           "pop",
+                                           pop_grid_year,
+                                           "lau",
+                                           lau_year,
+                                           "p",
+                                           power_centre,
+                                           adjusted_text,
+                                           sep = "_"),
+                              value = tibble::tibble(gisco_id = current_gisco_id),
+                              append = TRUE)
+            
+            pop_centre_df
+          }
+        })
+      dplyr::bind_rows(cached_df, 
+                       non_cached_pop_centre_df) %>% 
+        dplyr::arrange(gisco_id) %>% 
+        readr::write_csv(current_country_csv)
+    }
+    
+  })
+
+
+
+```

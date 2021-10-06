@@ -1,17 +1,49 @@
 ---
 title: "Population-weighted centres of local administrative units (LAU) in Europe"
 description: |
-  If you need the coordinates of a city, where do you put the centre?
+  If you need the coordinates of a location, where do you put the centre?
 author:
   - name: Giorgio Comai 
     url: https://giorgiocomai.eu
     affiliation: OBCT/EDJNet
     affiliation_url: https://www.europeandatajournalism.eu/
-date: "`r Sys.Date()`"
-output: distill::distill_article
+site: distill::distill_website
 ---
 
-This repository includes a dataset with the population-weighted centre of local administrative units (LAU) based on data distributed by the European Union.
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+```
+
+
+__N.B. This is a work in progress. Ensure that the data provided are fit for purpose.__
+
+This repository presents datasets of the population-weighted centres of local administrative units in Europe, the scripts used to generate them with different approaches, as well as details on quality checks and peculiarities of the data.
+
+It also tries to facilitate matching a given local administrative unit to their [correspondent NUTS region](https://ec.europa.eu/eurostat/web/nuts/local-administrative-units).
+
+## Motivation
+
+- when showing data points of a local adminsitrative unit (or other territorial boundaries) we often need a specific point on a map to show relevant information. Where should that point fall?
+- when taking values from a data grid it is often useful to have a specific set of coordinates: which should that be for local administrative units?
+
+Check out the following blog post for context:
+
+[How to find the population-weighted centre of local administrative units](https://medium.com/european-data-journalism-network/how-to-find-the-population-weighted-centre-of-local-administrative-units-a0d198fc91f7)
+
+## Data availability
+
+This repository covers local administrative units as distributed by Europen Union's [Gisco services](https://gisco-services.ec.europa.eu/distribution/v2/lau/download/), and tentatively LAUs in nieghbouring jurisdictions.
+
+The main determinants of data availability are:
+
+- inclusion of relevant country in the [LAU datasets](https://gisco-services.ec.europa.eu/distribution/v2/lau/download/) for the relevant year
+- coverage by the EU population grid [as distributed by the EU's Gisco services](https://ec.europa.eu/eurostat/web/gisco/geodata/reference-data/population-distribution-demography/geostat)
+
+
+Additional sources for the population grid include [High Resolution Population Density Maps distributed by Facebook](https://data.humdata.org/organization/facebook).
+
+[GADM for administrative boundaries](https://gadm.org/).
 
 ## Sources
 
@@ -29,409 +61,18 @@ The population grid can be downloaded from the following link:
 https://ec.europa.eu/eurostat/web/gisco/geodata/reference-data/population-distribution-demography/geostat
 
 Details on how the population grid was generated as well as context on the reliability of the data is included in the factsheet that can be downloaded with the latest available dataset (at the time of writing), based on 2018 data and released in 2021:
-https://ec.europa.eu/eurostat/cache/GISCO/geodatafiles/JRC_GRID_2018.zip
 
-## Data processing
+## Licensing
 
-```{r setup, include=FALSE}
+© EuroGeographics for the administrative boundaries (see [full licensing details for LAUs](https://ec.europa.eu/eurostat/web/gisco/geodata/reference-data/administrative-units-statistical-units))
 
-process_pop_centre <- TRUE
+Licensing for the population grid dataset varies depening on year and the country originally providing the data. See [the relevant page for full details](https://ec.europa.eu/eurostat/web/gisco/geodata/reference-data/population-distribution-demography). 
 
-knitr::opts_chunk$set(echo = TRUE)
+Facebook's [High Resolution Population Density Maps](https://data.humdata.org/organization/facebook) are distributed with a CC-BY license.
 
-library("tidyverse", quietly = TRUE)
-library("sf", quietly = TRUE)
-library("latlon2map")
-library("RSQLite") # for caching
-options(timeout = 60000)
 
-cache_folder <- fs::path(fs::path_home_r(), "R", "ll_data")
+The processed dataset is distributed with a CC-BY license, crediting [EDJNet](https://europeandatajournalism.eu/) and, if relevant, linking to this repository.
 
-fs::dir_create(cache_folder)
 
-ll_set_folder(path = cache_folder)
 
-## set db
-db <- DBI::dbConnect(
-  drv = RSQLite::SQLite(),
-  fs::path(cache_folder, "pop_weighted_centre.sqlite")
-)
-
-pop_grid_year <- 2011
-lau_year <- 2018
-
-# pop_grid_year <- 2018
-# lau_year <- 2020
-
-power_centre <- 2
-
-source("functions.R")
-
-
-```
-
-
-Calculating the population-weighted centre of thousands of LAU is a computing-intensive process that may take many hours. Repeating this process for all available LAU may well take a few days on most consumer hardware. 
-
-To prevent having to re-run the whole process in case of interruptions, by default this script caches coordinates in a local SQLite database. 
-
-
-
-## Data availability
-
-
-```{r population grid data availability}
-available_pop_grid_years <- c(2006, 2011, 2018)
-
-pop_grid_available <- purrr::map_dfr(.x = available_pop_grid_years,
-               .f = function(x) {
-  get_pop_grid_countries(x, db) %>% 
-                   dplyr::mutate(year = x)
-})
-pop_grid_available %>% dplyr::group_by(year) %>% count() %>% knitr::kable()
-
-```
-
-
-```{r}
-pop_grid_available %>%
-  dplyr::group_by(year) %>%
-  dplyr::arrange(country) %>% 
-  summarise(country = stringr::str_c(country, collapse = ", ")) %>% knitr::kable()
-```
-
-
-```{r lau data availability}
-available_lau_years <- 2011:2020
-
-lau_available <- purrr::map_dfr(.x = available_lau_years,
-               .f = function(x) {
-  get_lau_countries(x, db) %>% 
-                   dplyr::mutate(year = x)
-})
-lau_available %>% dplyr::group_by(year) %>% count() %>% knitr::kable()
-```
-
-
-```{r}
-lau_available %>%
-  dplyr::group_by(year) %>%
-  dplyr::arrange(country) %>% 
-  summarise(country = stringr::str_c(country, collapse = ", ")) %>% knitr::kable()
-```
-
-For LAU, the most recent dataset is not the one with most countries. 
-
-```{r}
-latest_lau_countries <- lau_available %>% 
-  dplyr::slice_max(year) %>% 
-  dplyr::pull(country)
-
-all_lau_countries <- lau_available %>% 
-#  dplyr::filter(year!= max (year)) %>% 
-  dplyr::pull(country) %>% 
-  unique()
-
-all_lau_countries[!is.element(all_lau_countries, latest_lau_countries)]
-```
-
-Largest coverage may be obtained by using older LAU when the most recent are not available for relevant countries. 
-
-
-```{r get base data for each source dataset}
-pop_grid_countries <- get_pop_grid_countries(pop_grid_year, db)
-lau_countries <- get_lau_countries(lau_year, db)
-gisco_id_df <- get_gisco_id(lau_year, db)
-```
-
-
-How many countries are present in both the LAU and population grid dataset?
-
-```{r}
-pop_grid_lau_countries <- dplyr::semi_join(x = lau_countries,
-                                           y = pop_grid_countries,
-                                           by = "country") %>% 
-  dplyr::arrange(country) %>% 
-  dplyr::pull(country)
-
-length(pop_grid_lau_countries)
-
-pop_grid_lau_countries
-```
-
-
-
-
-
-
-```{r process, eval=process_pop_centre}
-
-pop_grid_sf <- ll_get_population_grid(year = pop_grid_year,
-                                      silent = TRUE)
-  # for older grid datasets
-  if (is.element("CNTR_CODE", colnames(pop_grid_sf))) {
-    pop_grid_sf <- pop_grid_sf %>% 
-      rename(CNTR_ID = CNTR_CODE)
-  }
-  
-  # for older grid datasets
-  if (is.element("TOT_P_2018", colnames(pop_grid_sf))) {
-    pop_grid_sf <- pop_grid_sf %>% 
-      rename(TOT_P = TOT_P_2018)
-  }
-
-
-purrr::walk(
-  .x = pop_grid_lau_countries,
-  .f = function(current_country) {
-    current_csv_folder <- paste("pop", pop_grid_year, "lau", lau_year, "p", power_centre, sep = "_")
-fs::dir_create(current_csv_folder)
-
-    current_country_csv <- fs::path(current_csv_folder, paste0(paste(current_country, "pop", pop_grid_year, "lau", lau_year, "p", power_centre,  sep = "_"), ".csv"))
-    
-    if (fs::file_exists(current_country_csv)==FALSE) {
-      message(paste0("Now processing ", current_country, " (", which(pop_grid_lau_countries %in% current_country), " of ", length(pop_grid_lau_countries), ")"))
-      
-      current_table <- paste(current_country, "pop", pop_grid_year, "lau", lau_year, "p", power_centre, sep = "_")
-       
-      if (DBI::dbExistsTable(conn = db,
-                             name = current_table) == TRUE) {
-        cached_df <- dplyr::tbl(src = db, current_table) %>% 
-          tibble::as_tibble() %>% 
-          dplyr::filter(gisco_id %in% gisco_id_df$gisco_id)
-        
-      } else {
-        cached_df <- tibble::tibble(gisco_id = as.character(NA), 
-                                    lau_name = as.character(NA),
-                                    longitude = as.numeric(NA), 
-                                    latitude = as.numeric(NA)
-        ) %>%
-          dplyr::slice(0)
-      }
-      
-      
-      non_cached_df <- gisco_id_df %>% 
-        dplyr::filter(country == current_country) %>% 
-        dplyr::anti_join(y = cached_df, by = "gisco_id")
-      
-      current_country_lau_sf <- ll_get_lau_eu(year = lau_year, silent = TRUE) %>% 
-        dplyr::filter(CNTR_CODE == current_country)
-      
-      current_country_pop_grid <- pop_grid_sf %>% 
-        dplyr::filter(is.na(CNTR_ID)==FALSE) %>% 
-        dplyr::filter(stringr::str_detect(string = CNTR_ID,
-                                          pattern = current_country))
-      
-      
-      pb <- progress::progress_bar$new(total = length(non_cached_df$gisco_id))
-      
-      non_cached_pop_centre_df <- purrr::map_dfr(
-        .x = non_cached_df$gisco_id,
-        .f = function(current_gisco_id) {
-          pb$tick()
-          
-          
-          # for older LAU datasets
-          if (is.element("LAU_LABEL", colnames(current_country_lau_sf))) {
-            current_country_lau_sf <- current_country_lau_sf %>% 
-              rename(LAU_NAME = LAU_LABEL)
-          }
-          
-          current_lau_sf <- current_country_lau_sf %>% 
-            dplyr::filter(GISCO_ID == current_gisco_id) %>% 
-            dplyr::select(GISCO_ID, CNTR_CODE, LAU_NAME)
-          
-          current_pop_grid_sf <- sf::st_filter(
-            x = current_country_pop_grid %>% sf::st_transform(crs = 3857),
-            y = current_lau_sf %>% sf::st_transform(crs = 3857),
-            join = sf::st_intersects)
-          
-          
-          if (nrow(current_pop_grid_sf)>0&sum(current_pop_grid_sf$TOT_P)>0) {
-            pop_centre_df <- ll_find_pop_centre(sf_location = current_lau_sf,
-                                                sf_population_grid = current_pop_grid_sf,
-                                                power = power_centre) %>% 
-              sf::st_coordinates() %>%
-              tibble::as_tibble() %>% 
-              dplyr::transmute(
-                gisco_id = current_gisco_id,
-                lau_name = current_lau_sf %>% dplyr::pull(LAU_NAME),
-                longitude = as.numeric(X),
-                latitude = as.numeric(Y)
-              )
-            
-            DBI::dbWriteTable(db,
-                              name = current_table,
-                              value = pop_centre_df,
-                              append = TRUE)
-            
-            pop_centre_df
-          } else {
-            pop_centre_df <- sf::st_centroid(current_lau_sf) %>% 
-              sf::st_coordinates() %>%
-              tibble::as_tibble() %>% 
-              dplyr::transmute(
-                gisco_id = current_gisco_id,
-                lau_name = current_lau_sf %>% dplyr::pull(LAU_NAME),
-                longitude = as.numeric(X),
-                latitude = as.numeric(Y)
-              )
-
-            DBI::dbWriteTable(db,
-                              name = current_table,
-                              value = pop_centre_df,
-                              append = TRUE)
-            
-            # to check lau where centroid was used
-            DBI::dbWriteTable(db,
-                              name = paste("centroid",
-                                           "pop",
-                                           pop_grid_year,
-                                           "lau",
-                                           lau_year,
-                                           "p",
-                                           power_centre,
-                                           sep = "_"),
-                              value = tibble::tibble(gisco_id = current_gisco_id),
-                              append = TRUE)
-            
-            pop_centre_df
-          }
-        })
-      dplyr::bind_rows(cached_df, 
-                       non_cached_pop_centre_df) %>% 
-        dplyr::arrange(gisco_id) %>% 
-        readr::write_csv(current_country_csv)
-    }
-    
-  })
-
-
-
-```
-
-
-# Matching LAU with NUTS
-
-```{r}
-lau_year <-  2018
-nuts_year <- 2016
-
-lau_nuts_concordance_csv <- fs::path("lau_nuts_concordance", 
-                                     stringr::str_c("lau_nuts_concordance-lau_year_",
-                                                    lau_year,
-                                                    "-nuts_year_",
-                                                    nuts_year,
-                                                    ".csv"))
-
-if (fs::file_exists(lau_nuts_concordance_csv)) {
-  lau_with_nuts_df <- readr::read_csv(lau_nuts_concordance_csv)
-} else {
-  lau_with_nuts_df <- ll_get_lau_eu(year = lau_year) %>% 
-    sf::st_drop_geometry() %>% 
-    filter(is.na(LAU_NAME)==FALSE) %>% 
-    dplyr::rename(gisco_id = GISCO_ID) %>% 
-    dplyr::left_join(y = ll_get_lau_nuts_concordance(lau_year = lau_year,
-                                                     nuts_year = nuts_year),
-                     by = "gisco_id")  %>% 
-    dplyr::select(gisco_id, country, nuts_2, nuts_3, lau_name_national, lau_name_latin) %>% 
-    dplyr::arrange(gisco_id)
-  
-  fs::dir_create("lau_nuts_concordance")
-  readr::write_csv(x = lau_with_nuts_df, 
-                   file = lau_nuts_concordance_csv)
-}
-
-
-
-```
-
-
-
-# Issues
-
-We expect this approach to offer a much more meaningful "centre" for most municipalities if compared with a centroid. However, the given set of coordinates is likely to be less reliable in cases when a high share of residents is recorded in cells crossed by the municipality's boundary, hence making it difficult to assess if they are to be attributed to one municipality or the other.
-
-In very small municipalities, the difference would anyway likely be small. In some cases of municipalities with a large surface and a small and geographically concentrated populated centre located next to their administrative boundaries (a combination not infrequent in mountain locations), this may lead to misleading results, in particular if a large number of residents of a neighbouring municipality are recorded in a cell crossing the border.
-
-A more structured analysis of such cases may be included in the future in this repository. 
-
-In the meantime, for more examples based on different scenarios see the blog post introducing this dataset: https://medium.com/european-data-journalism-network/how-to-find-the-population-weighted-centre-of-local-administrative-units-a0d198fc91f7
-
-A likely more accurate [dataset based on Facebook's 30m population grids](https://data.humdata.org/organization/facebook) may also be published for some countries. Again, see [the blog post](https://medium.com/european-data-journalism-network/how-to-find-the-population-weighted-centre-of-local-administrative-units-a0d198fc91f7) for
-a brief presentation of this additional source.
-
-
-## LAU where centroid was used
-
-When not a single cell of the population grid intersects with a given LAU, the centroid is calculated in its stead. 
-
-This is a relatively rare occurrence, and includes mostly:
-
-- French oversea territories, not included in the population grid distributed by the European Union, or small islands close to the mainland with a small resident population, e.g. [Île-de-Sein](https://en.wikipedia.org/wiki/%C3%8Ele_de_Sein)
-- a few German local administrative units known as "gemeindefreies Gebiet", with total official population corresponding to zero, e.g. [Rheinau](https://de.wikipedia.org/wiki/Rheinau_(gemeindefreies_Gebiet))
-- small administrative units in Greece with a tiny total population or corresponding to zero, e.g. [Παράμερο Τρικάλων](https://el.wikipedia.org/wiki/%CE%A0%CE%B1%CF%81%CE%AC%CE%BC%CE%B5%CF%81%CE%BF_%CE%A4%CF%81%CE%B9%CE%BA%CE%AC%CE%BB%CF%89%CE%BD)
-- Christiansø, a Danish island with less than 100 residents as of 2018
-
-The population of all involved municipalities is tiny.
-
-```{r}
-# N.B. This assumes processing takes place without removing the cache folder
-
-missing_folder <- paste("missing_pop",
-                        pop_grid_year,
-                        "lau",
-                        lau_year,
-                        "p",
-                        power_centre,
-                        sep = "_")
-
-missing_file <- fs::path(missing_folder, 
-                         paste0(paste("missing_pop",
-                                      pop_grid_year,
-                                      "lau",
-                                      lau_year,
-                                      "p",
-                                      power_centre,
-                                      sep = "_"), ".csv"))
-
-if (fs::file_exists(missing_file)==FALSE) {
-  fs::dir_create(path = missing_folder)
-  
-  
-  missing_df <- DBI::dbReadTable(db,
-                                 name = paste("centroid",
-                                              "pop",
-                                              pop_grid_year,
-                                              "lau",
-                                              lau_year,
-                                              "p",
-                                              power_centre,
-                                              sep = "_"))
-  readr::write_csv(x = missing_df, file = missing_file)
-} else {
-  missing_df <- readr::read_csv(file = missing_file)
-}
-
-
-missing_with_details_df <- missing_df %>% 
-  dplyr::left_join(y = ll_get_lau_nuts_concordance(lau_year = 2018),
-                   by = "gisco_id") %>% 
-  dplyr::left_join(y = ll_get_lau_eu(year = 2018) %>%
-                     sf::st_drop_geometry() %>%
-                     dplyr::rename(gisco_id = GISCO_ID),
-                   by = "gisco_id") %>% 
-  dplyr::select(gisco_id, nuts_3, lau_name_national, poulation_2018 = POP_2018)
-
-missing_with_details_df %>% 
-  dplyr::filter(is.na(nuts_3)==FALSE,
-                nuts_3 != "FRY10",     # Guadeloupe
-                nuts_3 != "FRY20",     # Martinique
-                nuts_3 != "FRY30",     # Guyane
-                nuts_3 != "FRY40",     # La Réunion
-                nuts_3 != "FRY50") %>% # Mayotte 
-knitr::kable()
-# dplyr::mutate(country = stringr::str_extract(gisco_id, string = "[A-Z]{2}")) 
-
-```
 

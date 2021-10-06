@@ -1,0 +1,14 @@
+name: "population_weighted_centres"
+title: "Population-weighted centres of local administrative units (LAU) in Europe"
+description: |
+  If you need the coordinates of a location, where do you put the centre?
+output_dir: "docs"
+navbar:
+  right:
+    - text: "Home"
+      href: index.html
+    - text: "Data availability"
+      href: data_availability.html
+    - text: "Quality checks"
+      href: quality_checks.html
+output: distill::distill_article
